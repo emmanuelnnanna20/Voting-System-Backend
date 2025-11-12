@@ -53,8 +53,24 @@ class Election(Base):
     
     # Relationships
     admin = relationship("User", back_populates="elections")
+    options = relationship("Option", back_populates="election", cascade="all, delete-orphan")
     registrations = relationship("Registration", back_populates="election", cascade="all, delete-orphan")
     votes = relationship("Vote", back_populates="election", cascade="all, delete-orphan")
+
+class Option(Base):
+    """
+    Options table - stores voting options/candidates for each election
+    Each election can have multiple options that voters can choose from
+    """
+    __tablename__ = "options"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    election_id = Column(Integer, ForeignKey("elections.id"), nullable=False)
+    option_text = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    election = relationship("Election", back_populates="options")
 
 class Registration(Base):
     """

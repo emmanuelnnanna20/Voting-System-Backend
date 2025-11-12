@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
 from database import get_db
-from models import Election, Registration, Vote, ElectionType
+from models import Election, Registration, Vote, Option, ElectionType
 from schemas import VoterRegistration, RegistrationResponse, VoteCreate, VoteResponse
 from utils.security import generate_unique_token
 
@@ -73,6 +73,7 @@ def get_vote_info(token: str, db: Session = Depends(get_db)):
     """
     Get election information using voting token
     Used to display election details before voter casts their vote
+    Returns election info and available voting options
     """
     # Find registration by token
     registration = db.query(Registration).filter(
@@ -115,13 +116,17 @@ def get_vote_info(token: str, db: Session = Depends(get_db)):
             detail="Election has ended"
         )
     
+    # Get voting options
+    options = db.query(Option).filter(Option.election_id == election.id).all()
+    
     return {
         "election_id": election.id,
         "title": election.title,
         "description": election.description,
         "start_time": election.start_time,
         "end_time": election.end_time,
-        "voter_email": registration.voter_email
+        "voter_email": registration.voter_email,
+        "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
     }
 
 @router.post("/vote/{token}", response_model=VoteResponse)
@@ -175,6 +180,18 @@ def cast_secured_vote(
             detail="Election has ended"
         )
     
+    # Verify the choice is valid
+    valid_option = db.query(Option).filter(
+        Option.election_id == election.id,
+        Option.option_text == vote_data.choice
+    ).first()
+    
+    if not valid_option:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid voting option"
+        )
+    
     # Create vote record (voter_id is None for privacy)
     new_vote = Vote(
         election_id=election.id,
@@ -196,6 +213,7 @@ def get_anonymous_vote_info(election_id: int, db: Session = Depends(get_db)):
     """
     Get election information for anonymous voting
     Anyone can access this without registration
+    Returns election info and available voting options
     """
     # Find the election
     election = db.query(Election).filter(Election.id == election_id).first()
@@ -227,12 +245,16 @@ def get_anonymous_vote_info(election_id: int, db: Session = Depends(get_db)):
             detail="Election has ended"
         )
     
+    # Get voting options
+    options = db.query(Option).filter(Option.election_id == election.id).all()
+    
     return {
         "election_id": election.id,
         "title": election.title,
         "description": election.description,
         "start_time": election.start_time,
-        "end_time": election.end_time
+        "end_time": election.end_time,
+        "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
     }
 
 @router.post("/vote/anonymous/{election_id}", response_model=VoteResponse)
@@ -274,6 +296,18 @@ def cast_anonymous_vote(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Election has ended"
+        )
+    
+    # Verify the choice is valid
+    valid_option = db.query(Option).filter(
+        Option.election_id == election.id,
+        Option.option_text == vote_data.choice
+    ).first()
+    
+    if not valid_option:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid voting option"
         )
     
     # Create anonymous vote record
