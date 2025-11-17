@@ -57,6 +57,8 @@ class ElectionCreate(BaseModel):
     type: ElectionType
     start_time: datetime
     end_time: datetime
+    options: List[str] = Field(..., min_items=2, description="List of voting options (minimum 2)")
+
 
 class ElectionResponse(BaseModel):
     """Schema for election data in responses"""

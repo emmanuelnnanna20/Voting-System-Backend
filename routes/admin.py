@@ -4,14 +4,14 @@ Admins can signup, login, create elections, and generate registration links
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from datetime import timedelta
+from datetime import datetime
 from typing import List
 import os
 from database import get_db
-from models import User, Election, Registration, UserRole, ElectionType
+from models import User, Election, Registration, UserRole, ElectionType, Option
 from schemas import (
     UserCreate, UserLogin, UserResponse, Token,
-    ElectionCreate, ElectionResponse, ElectionWithLinks, LinkResponse
+    ElectionCreate, ElectionResponse, ElectionWithLinks
 )
 from utils.security import (
     hash_password, verify_password, create_access_token,
@@ -95,7 +95,7 @@ def create_election(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new election
+    Create a new election with voting options
     Validates dates and generates appropriate links based on election type
     """
     # Validate election dates
@@ -103,6 +103,13 @@ def create_election(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End time must be after start time"
+        )
+    
+    # Validate options
+    if not hasattr(election_data, 'options') or len(election_data.options) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least 2 voting options are required"
         )
     
     # Create election
@@ -116,6 +123,16 @@ def create_election(
     )
     
     db.add(new_election)
+    db.flush()  # Get the election ID
+    
+    # Add voting options
+    for option_text in election_data.options:
+        option = Option(
+            election_id=new_election.id,
+            option_text=option_text.strip()
+        )
+        db.add(option)
+    
     db.commit()
     db.refresh(new_election)
     
@@ -124,10 +141,12 @@ def create_election(
     
     if new_election.type == ElectionType.SECURED:
         # For secured elections, provide registration link
-        response.registration_link = f"{FRONTEND_URL}/register/{new_election.id}"
+        response.registration_link = f"{FRONTEND_URL}/voter_registration_page.html?id={new_election.id}"
+        response.voting_link = None
     else:
         # For anonymous elections, provide direct voting link
-        response.voting_link = f"{FRONTEND_URL}/vote/anonymous/{new_election.id}"
+        response.registration_link = None
+        response.voting_link = f"{FRONTEND_URL}/anonymous_voting_page.html?id={new_election.id}"
     
     return response
 
@@ -140,7 +159,9 @@ def get_admin_elections(
     Get all elections created by the current admin
     Returns list of elections with their details
     """
-    elections = db.query(Election).filter(Election.admin_id == current_admin.id).all()
+    elections = db.query(Election).filter(
+        Election.admin_id == current_admin.id
+    ).order_by(Election.created_at.desc()).all()
     return elections
 
 @router.get("/elections/{election_id}", response_model=ElectionWithLinks)
@@ -169,9 +190,11 @@ def get_election_details(
     response = ElectionWithLinks.model_validate(election)
     
     if election.type == ElectionType.SECURED:
-        response.registration_link = f"{FRONTEND_URL}/register/{election.id}"
+        response.registration_link = f"{FRONTEND_URL}/voter_registration_page.html?id={election.id}"
+        response.voting_link = None
     else:
-        response.voting_link = f"{FRONTEND_URL}/vote/anonymous/{election.id}"
+        response.registration_link = None
+        response.voting_link = f"{FRONTEND_URL}/anonymous_voting_page.html?id={election.id}"
     
     return response
 
@@ -266,3 +289,86 @@ def get_election_registrations(
         }
         for reg in registrations
     ]
+
+@router.post("/elections/{election_id}/start")
+def start_election(
+    election_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Start election immediately (closes registration for secured elections)
+    Automatically sends voting links to all registered voters
+    """
+    from utils.email_utils import send_bulk_voting_links
+    
+    election = db.query(Election).filter(
+        Election.id == election_id,
+        Election.admin_id == current_admin.id
+    ).first()
+    
+    if not election:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Election not found"
+        )
+    
+    # Update start time to now
+    now = datetime.utcnow()
+    election.start_time = now
+    db.commit()
+    
+    # For secured elections, send voting links
+    if election.type == ElectionType.SECURED:
+        registrations = db.query(Registration).filter(
+            Registration.election_id == election_id,
+            Registration.has_voted == False
+        ).all()
+        
+        if registrations:
+            recipients_tokens = [(reg.voter_email, reg.unique_token) for reg in registrations]
+            results = send_bulk_voting_links(recipients_tokens, election.title)
+            
+            return {
+                "message": "Election started and voting links sent",
+                "election_id": election_id,
+                "status": "active",
+                "links_sent": results["success"],
+                "links_failed": results["failed"]
+            }
+    
+    return {
+        "message": "Election started successfully",
+        "election_id": election_id,
+        "status": "active"
+    }
+
+@router.post("/elections/{election_id}/end")
+def end_election(
+    election_id: int,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    End election immediately
+    """
+    election = db.query(Election).filter(
+        Election.id == election_id,
+        Election.admin_id == current_admin.id
+    ).first()
+    
+    if not election:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Election not found"
+        )
+    
+    # Update end time to now
+    election.end_time = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "message": "Election ended successfully",
+        "election_id": election_id,
+        "status": "ended"
+    }

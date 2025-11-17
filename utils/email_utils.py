@@ -50,9 +50,10 @@ def send_email(recipient: str, subject: str, body: str, html: bool = True) -> bo
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SENDER_EMAIL, recipient, message.as_string())
         
+        print(f"✅ Email sent successfully to {recipient}")
         return True
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print(f"❌ Failed to send email to {recipient}: {e}")
         return False
 
 def send_voting_link_email(recipient: str, election_title: str, voting_token: str) -> bool:
@@ -65,7 +66,8 @@ def send_voting_link_email(recipient: str, election_title: str, voting_token: st
     Returns:
         True if email sent successfully
     """
-    voting_link = f"{FRONTEND_URL}/vote/{voting_token}"
+    # IMPORTANT: Use voting_page.html with token parameter
+    voting_link = f"{FRONTEND_URL}/voting_page.html?token={voting_token}"
     
     subject = f"Your Voting Link for {election_title}"
     
@@ -104,7 +106,7 @@ def send_voting_link_email(recipient: str, election_title: str, voting_token: st
                 </p>
             </div>
             <div class="footer">
-                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>This is an automated message from VoteSecure. Please do not reply to this email.</p>
             </div>
         </div>
     </body>
@@ -169,7 +171,7 @@ def send_registration_confirmation(recipient: str, election_title: str) -> bool:
                 <p><strong>Please check your inbox</strong> at the scheduled time to cast your vote.</p>
             </div>
             <div class="footer">
-                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>This is an automated message from VoteSecure. Please do not reply to this email.</p>
             </div>
         </div>
     </body>
