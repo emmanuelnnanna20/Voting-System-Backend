@@ -239,3 +239,4 @@ def send_registration_confirmation(recipient: str, election_title: str) -> bool:
     """
 
     return send_email(recipient, subject, body, html=True)
+# FORCE NEW COMMIT — SENDGRID API IS ACTIVE NOW
