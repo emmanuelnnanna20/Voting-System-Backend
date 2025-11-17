@@ -1,85 +1,67 @@
 """
-Email utilities for sending registration and voting links
-Supports SMTP configuration via environment variables
+Email utilities using SendGrid API (HTTP-based, no SMTP timeouts)
+Supports registration and voting link emails
 """
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
 from typing import List
 
 load_dotenv()
 
-# Email configuration from environment variables
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "your-email@gmail.com")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "your-app-password")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", SMTP_USERNAME)
+# SendGrid config from environment
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")  # Your SG. key from Render env
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "emmanuelnnanna.en@gmail.com")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5500")
 
 def send_email(recipient: str, subject: str, body: str, html: bool = True) -> bool:
     """
-    Send an email using SMTP
+    Send an email using SendGrid API
     Args:
         recipient: Email address of the recipient
         subject: Email subject line
-        body: Email body content
+        body: Email body content (HTML or plain)
         html: Whether the body is HTML (default True)
     Returns:
         True if email sent successfully, False otherwise
     """
+    if not SENDGRID_API_KEY:
+        print("❌ SENDGRID_API_KEY not set in environment")
+        return False
+    
     try:
-        print(f"📧 Attempting to send email to {recipient}...")
-        print(f"📧 SMTP Server: {SMTP_SERVER}:{SMTP_PORT}")
+        print(f"📧 Attempting to send email to {recipient} via SendGrid API...")
         print(f"📧 From: {SENDER_EMAIL}")
         
-        # Create message
-        message = MIMEMultipart("alternative")
-        message["Subject"] = subject
-        message["From"] = SENDER_EMAIL
-        message["To"] = recipient
+        # Create SendGrid message
+        message = Mail(
+            from_email=SENDER_EMAIL,
+            to_emails=recipient,
+            subject=subject,
+            html_content=body if html else None,
+            plain_text_content=body if not html else None
+        )
         
-        # Attach body
-        if html:
-            part = MIMEText(body, "html")
+        # Send via API
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        
+        if response.status_code == 202:
+            print(f"✅ Email sent successfully to {recipient} (Status: {response.status_code})")
+            return True
         else:
-            part = MIMEText(body, "plain")
-        message.attach(part)
-        
-        # Connect to SMTP server and send
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-            server.set_debuglevel(1)  # Enable debug output
-            server.starttls()  # Enable TLS encryption
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SENDER_EMAIL, recipient, message.as_string())
-        
-        print(f"✅ Email sent successfully to {recipient}")
-        return True
-    except smtplib.SMTPAuthenticationError as e:
-        print(f"❌ SMTP Authentication failed: {e}")
-        print("⚠️ Check your SMTP_USERNAME and SMTP_PASSWORD in .env file")
-        print("⚠️ For Gmail, you need an App Password, not your regular password")
-        return False
-    except smtplib.SMTPException as e:
-        print(f"❌ SMTP error occurred: {e}")
-        return False
+            print(f"❌ SendGrid API failed: Status {response.status_code}, Body: {response.body}")
+            return False
+            
     except Exception as e:
         print(f"❌ Failed to send email to {recipient}: {e}")
         return False
 
 def send_voting_link_email(recipient: str, election_title: str, voting_token: str) -> bool:
     """
-    Send a one-time voting link to a registered voter
-    Args:
-        recipient: Voter's email address
-        election_title: Title of the election
-        voting_token: Unique token for this voter's voting link
-    Returns:
-        True if email sent successfully
+    Send a one-time voting link to a registered voter via SendGrid API
     """
-    # CRITICAL: Use voting_page.html with token parameter
     voting_link = f"{FRONTEND_URL}/voting_page.html?token={voting_token}"
     
     subject = f"🗳️ Your Voting Link for {election_title}"
@@ -133,10 +115,9 @@ def send_voting_link_email(recipient: str, election_title: str, voting_token: st
                 <p style="text-align: center;">
                     <a href="{voting_link}" class="button">🗳️ VOTE NOW</a>
                 </p>
-                
                 <div class="warning">
-                    <strong>⚠️ IMPORTANT:</strong>
-                    <ul style="margin: 10px 0;">
+                    <strong>⚠️ Important Rules:</strong>
+                    <ul>
                         <li>This is a <strong>ONE-TIME</strong> voting link</li>
                         <li>Once you vote, this link will <strong>EXPIRE</strong></li>
                         <li>You cannot change your vote after submission</li>
@@ -167,7 +148,7 @@ def send_voting_link_email(recipient: str, election_title: str, voting_token: st
 
 def send_bulk_voting_links(recipients_tokens: List[tuple], election_title: str) -> dict:
     """
-    Send voting links to multiple voters
+    Send voting links to multiple voters via SendGrid API
     Args:
         recipients_tokens: List of tuples (email, token)
         election_title: Title of the election
@@ -176,7 +157,7 @@ def send_bulk_voting_links(recipients_tokens: List[tuple], election_title: str) 
     """
     results = {"success": 0, "failed": 0, "failed_emails": []}
     
-    print(f"\n📧 Starting bulk email send to {len(recipients_tokens)} recipients...")
+    print(f"\n📧 Starting bulk email send to {len(recipient_tokens)} recipients via SendGrid API...")
     
     for email, token in recipients_tokens:
         print(f"\n📧 Sending to: {email}")
@@ -196,12 +177,7 @@ def send_bulk_voting_links(recipients_tokens: List[tuple], election_title: str) 
 
 def send_registration_confirmation(recipient: str, election_title: str) -> bool:
     """
-    Send a confirmation email after successful registration
-    Args:
-        recipient: Voter's email address
-        election_title: Title of the election
-    Returns:
-        True if email sent successfully
+    Send a confirmation email after successful registration via SendGrid API
     """
     subject = f"✅ Registration Confirmed: {election_title}"
     
