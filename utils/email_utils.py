@@ -157,7 +157,7 @@ def send_bulk_voting_links(recipients_tokens: List[tuple], election_title: str) 
     """
     results = {"success": 0, "failed": 0, "failed_emails": []}
     
-    print(f"\n📧 Starting bulk email send to {len(recipient_tokens)} recipients via SendGrid API...")
+    print(f"\n📧 Starting bulk email send to {len(recipients_tokens)} recipients via SendGrid API...")
     
     for email, token in recipients_tokens:
         print(f"\n📧 Sending to: {email}")
