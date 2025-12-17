@@ -53,24 +53,45 @@ class Election(Base):
     
     # Relationships
     admin = relationship("User", back_populates="elections")
+    positions = relationship("Position", back_populates="election", cascade="all, delete-orphan")
     options = relationship("Option", back_populates="election", cascade="all, delete-orphan")
     registrations = relationship("Registration", back_populates="election", cascade="all, delete-orphan")
     votes = relationship("Vote", back_populates="election", cascade="all, delete-orphan")
+
+class Position(Base):
+    """
+    Positions table - stores positions within an election (e.g., President, Vice President)
+    Each election can have multiple positions, each with their own candidates/options
+    """
+    __tablename__ = "positions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    election_id = Column(Integer, ForeignKey("elections.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    order = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    election = relationship("Election", back_populates="positions")
+    options = relationship("Option", back_populates="position", cascade="all, delete-orphan")
 
 class Option(Base):
     """
     Options table - stores voting options/candidates for each election
     Each election can have multiple options that voters can choose from
+    Options can optionally belong to a position (for multi-position elections)
     """
     __tablename__ = "options"
     
     id = Column(Integer, primary_key=True, index=True)
     election_id = Column(Integer, ForeignKey("elections.id"), nullable=False)
+    position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)  # Nullable for backward compat
     option_text = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships
     election = relationship("Election", back_populates="options")
+    position = relationship("Position", back_populates="options")
 
 class Registration(Base):
     """
@@ -93,15 +114,18 @@ class Vote(Base):
     """
     Votes table - stores all cast votes
     voter_id is nullable to support anonymous voting
+    position_id tracks which position this vote is for (multi-position elections)
     """
     __tablename__ = "votes"
     
     id = Column(Integer, primary_key=True, index=True)
     election_id = Column(Integer, ForeignKey("elections.id"), nullable=False)
+    position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)  # Nullable for single-position elections
     voter_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for anonymous votes
     choice = Column(String(255), nullable=False)  # The voter's selection
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships
     election = relationship("Election", back_populates="votes")
+    position = relationship("Position")
     voter = relationship("User")

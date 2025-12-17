@@ -6,18 +6,19 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List
 from database import get_db
-from models import Election, Vote, Registration
+from models import Election, Vote, Registration, Position
 from schemas import ElectionResults, ElectionResponse
 from utils.security import get_current_admin
 from models import User
 
 router = APIRouter()
 
-@router.get("/{election_id}/results", response_model=ElectionResults)
+@router.get("/{election_id}/results")
 def get_election_results(election_id: int, db: Session = Depends(get_db)):
     """
     Get results for a specific election
     Shows vote counts and percentages for each choice
+    For multi-position elections, results are grouped by position
     Public endpoint - anyone can view results
     """
     # Find the election
@@ -29,36 +30,82 @@ def get_election_results(election_id: int, db: Session = Depends(get_db)):
             detail="Election not found"
         )
     
-    # Get all votes for this election grouped by choice
-    vote_counts = db.query(
-        Vote.choice,
-        func.count(Vote.id).label('count')
-    ).filter(
-        Vote.election_id == election_id
-    ).group_by(Vote.choice).all()
+    # Check if this is a multi-position election
+    positions = db.query(Position).filter(Position.election_id == election_id).order_by(Position.order).all()
     
-    # Calculate total votes
-    total_votes = sum(count for _, count in vote_counts)
-    
-    # Build results with percentages
-    results = []
-    for choice, count in vote_counts:
-        percentage = (count / total_votes * 100) if total_votes > 0 else 0
-        results.append({
-            "choice": choice,
-            "count": count,
-            "percentage": round(percentage, 2)
-        })
-    
-    # Sort results by count (highest first)
-    results.sort(key=lambda x: x['count'], reverse=True)
-    
-    return {
-        "election_id": election.id,
-        "election_title": election.title,
-        "total_votes": total_votes,
-        "results": results
-    }
+    if positions:
+        # Multi-position election: return results grouped by position
+        positions_results = []
+        overall_total = 0
+        
+        for pos in positions:
+            # Get votes for this position
+            vote_counts = db.query(
+                Vote.choice,
+                func.count(Vote.id).label('count')
+            ).filter(
+                Vote.election_id == election_id,
+                Vote.position_id == pos.id
+            ).group_by(Vote.choice).all()
+            
+            total_votes = sum(count for _, count in vote_counts)
+            overall_total += total_votes
+            
+            results = []
+            for choice, count in vote_counts:
+                percentage = (count / total_votes * 100) if total_votes > 0 else 0
+                results.append({
+                    "choice": choice,
+                    "count": count,
+                    "percentage": round(percentage, 2)
+                })
+            
+            results.sort(key=lambda x: x['count'], reverse=True)
+            
+            positions_results.append({
+                "position_id": pos.id,
+                "position_title": pos.title,
+                "total_votes": total_votes,
+                "results": results,
+                "winner": results[0]["choice"] if results else None
+            })
+        
+        return {
+            "election_id": election.id,
+            "election_title": election.title,
+            "is_multi_position": True,
+            "total_votes": overall_total,
+            "positions": positions_results
+        }
+    else:
+        # Single-position election (backward compatible)
+        vote_counts = db.query(
+            Vote.choice,
+            func.count(Vote.id).label('count')
+        ).filter(
+            Vote.election_id == election_id
+        ).group_by(Vote.choice).all()
+        
+        total_votes = sum(count for _, count in vote_counts)
+        
+        results = []
+        for choice, count in vote_counts:
+            percentage = (count / total_votes * 100) if total_votes > 0 else 0
+            results.append({
+                "choice": choice,
+                "count": count,
+                "percentage": round(percentage, 2)
+            })
+        
+        results.sort(key=lambda x: x['count'], reverse=True)
+        
+        return {
+            "election_id": election.id,
+            "election_title": election.title,
+            "is_multi_position": False,
+            "total_votes": total_votes,
+            "results": results
+        }
 
 @router.get("/{election_id}", response_model=ElectionResponse)
 def get_election_public_info(election_id: int, db: Session = Depends(get_db)):

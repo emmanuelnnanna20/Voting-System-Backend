@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List
 import os
 from database import get_db
-from models import User, Election, Registration, UserRole, ElectionType, Option
+from models import User, Election, Registration, UserRole, ElectionType, Option, Position
 from schemas import (
     UserCreate, UserLogin, UserResponse, Token,
     ElectionCreate, ElectionResponse, ElectionWithLinks
@@ -96,6 +96,7 @@ def create_election(
 ):
     """
     Create a new election with voting options
+    Supports both single-position and multi-position elections
     Validates dates and generates appropriate links based on election type
     """
     # Validate election dates
@@ -103,13 +104,6 @@ def create_election(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End time must be after start time"
-        )
-    
-    # Validate options
-    if not hasattr(election_data, 'options') or len(election_data.options) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least 2 voting options are required"
         )
     
     # Create election
@@ -125,13 +119,35 @@ def create_election(
     db.add(new_election)
     db.flush()  # Get the election ID
     
-    # Add voting options
-    for option_text in election_data.options:
-        option = Option(
-            election_id=new_election.id,
-            option_text=option_text.strip()
-        )
-        db.add(option)
+    # Handle multi-position mode
+    if election_data.positions:
+        for idx, position_data in enumerate(election_data.positions):
+            position = Position(
+                election_id=new_election.id,
+                title=position_data.title,
+                order=idx
+            )
+            db.add(position)
+            db.flush()  # Get the position ID
+            
+            # Add options for this position
+            for option_text in position_data.options:
+                option = Option(
+                    election_id=new_election.id,
+                    position_id=position.id,
+                    option_text=option_text.strip()
+                )
+                db.add(option)
+    
+    # Handle single-position mode (backward compatible)
+    elif election_data.options:
+        for option_text in election_data.options:
+            option = Option(
+                election_id=new_election.id,
+                position_id=None,  # No position for single-position elections
+                option_text=option_text.strip()
+            )
+            db.add(option)
     
     db.commit()
     db.refresh(new_election)

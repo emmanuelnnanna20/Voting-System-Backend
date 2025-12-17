@@ -2,7 +2,7 @@
 Pydantic Schemas for Request/Response Validation
 Ensures data integrity and provides automatic API documentation
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -49,15 +49,38 @@ class TokenData(BaseModel):
     email: Optional[str] = None
     user_id: Optional[int] = None
 
+# Position Schemas (for multi-position elections)
+class PositionCreate(BaseModel):
+    """Schema for creating a position within an election"""
+    title: str = Field(..., min_length=1, max_length=255)
+    options: List[str] = Field(..., min_length=2, description="Candidates for this position (minimum 2)")
+
 # Election Schemas
 class ElectionCreate(BaseModel):
-    """Schema for creating a new election"""
+    """
+    Schema for creating a new election
+    Supports both single-position (backward compatible) and multi-position elections
+    """
     title: str = Field(..., min_length=3, max_length=255)
     description: Optional[str] = None
     type: ElectionType
     start_time: datetime
     end_time: datetime
-    options: List[str] = Field(..., min_items=2, description="List of voting options (minimum 2)")
+    # Single position mode (backward compatible)
+    options: Optional[List[str]] = Field(None, description="Simple options for single-position elections")
+    # Multi-position mode
+    positions: Optional[List[PositionCreate]] = Field(None, description="Multiple positions with their candidates")
+    
+    @model_validator(mode='after')
+    def validate_options_or_positions(self):
+        """Ensure either options or positions is provided, not both"""
+        if self.options and self.positions:
+            raise ValueError("Provide either 'options' (single-position) or 'positions' (multi-position), not both")
+        if not self.options and not self.positions:
+            raise ValueError("Either 'options' or 'positions' must be provided")
+        if self.options and len(self.options) < 2:
+            raise ValueError("At least 2 voting options are required")
+        return self
 
 
 class ElectionResponse(BaseModel):
@@ -95,9 +118,29 @@ class RegistrationResponse(BaseModel):
         from_attributes = True
 
 # Vote Schemas
-class VoteCreate(BaseModel):
-    """Schema for casting a vote"""
+class PositionVote(BaseModel):
+    """Schema for voting on a single position in multi-position elections"""
+    position_id: int
     choice: str = Field(..., min_length=1, max_length=255)
+
+class VoteCreate(BaseModel):
+    """
+    Schema for casting votes
+    Supports both single-position (backward compatible) and multi-position elections
+    """
+    # Single position mode (backward compatible)
+    choice: Optional[str] = Field(None, min_length=1, max_length=255)
+    # Multi-position mode
+    votes: Optional[List[PositionVote]] = Field(None, description="Votes for each position")
+    
+    @model_validator(mode='after')
+    def validate_choice_or_votes(self):
+        """Ensure either choice or votes is provided for voting"""
+        if self.choice and self.votes:
+            raise ValueError("Provide either 'choice' (single-position) or 'votes' (multi-position), not both")
+        if not self.choice and not self.votes:
+            raise ValueError("Either 'choice' or 'votes' must be provided")
+        return self
 
 class VoteResponse(BaseModel):
     """Schema for vote confirmation"""
@@ -109,6 +152,12 @@ class VoteResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class MultiVoteResponse(BaseModel):
+    """Schema for multi-position vote confirmation"""
+    message: str
+    election_id: int
+    votes_cast: int
+    
 # Results Schemas
 class ElectionResults(BaseModel):
     """Schema for election results"""

@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
 from database import get_db
-from models import Election, Registration, Vote, Option, ElectionType
-from schemas import VoterRegistration, RegistrationResponse, VoteCreate, VoteResponse
+from models import Election, Registration, Vote, Option, ElectionType, Position
+from schemas import VoterRegistration, RegistrationResponse, VoteCreate, VoteResponse, MultiVoteResponse
 from utils.security import generate_unique_token
 
 router = APIRouter()
@@ -73,7 +73,7 @@ def get_vote_info(token: str, db: Session = Depends(get_db)):
     """
     Get election information using voting token
     Used to display election details before voter casts their vote
-    Returns election info and available voting options
+    Returns election info and available voting options (grouped by position if multi-position)
     """
     # Find registration by token
     registration = db.query(Registration).filter(
@@ -116,20 +116,46 @@ def get_vote_info(token: str, db: Session = Depends(get_db)):
             detail="Election has ended"
         )
     
-    # Get voting options
-    options = db.query(Option).filter(Option.election_id == election.id).all()
+    # Check if this is a multi-position election
+    positions = db.query(Position).filter(Position.election_id == election.id).order_by(Position.order).all()
     
-    return {
-        "election_id": election.id,
-        "title": election.title,
-        "description": election.description,
-        "start_time": election.start_time,
-        "end_time": election.end_time,
-        "voter_email": registration.voter_email,
-        "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
-    }
+    if positions:
+        # Multi-position election: return positions with their options
+        positions_data = []
+        for pos in positions:
+            options = db.query(Option).filter(Option.position_id == pos.id).all()
+            positions_data.append({
+                "id": pos.id,
+                "title": pos.title,
+                "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
+            })
+        
+        return {
+            "election_id": election.id,
+            "title": election.title,
+            "description": election.description,
+            "start_time": election.start_time,
+            "end_time": election.end_time,
+            "voter_email": registration.voter_email,
+            "is_multi_position": True,
+            "positions": positions_data
+        }
+    else:
+        # Single-position election: return flat options (backward compatible)
+        options = db.query(Option).filter(Option.election_id == election.id).all()
+        
+        return {
+            "election_id": election.id,
+            "title": election.title,
+            "description": election.description,
+            "start_time": election.start_time,
+            "end_time": election.end_time,
+            "voter_email": registration.voter_email,
+            "is_multi_position": False,
+            "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
+        }
 
-@router.post("/vote/{token}", response_model=VoteResponse)
+@router.post("/vote/{token}")
 def cast_secured_vote(
     token: str,
     vote_data: VoteCreate,
@@ -137,6 +163,7 @@ def cast_secured_vote(
 ):
     """
     Cast a vote using a one-time voting token (secured voting)
+    Supports both single-position and multi-position elections
     Marks the token as used after voting
     """
     # Find registration by token
@@ -180,40 +207,97 @@ def cast_secured_vote(
             detail="Election has ended"
         )
     
-    # Verify the choice is valid
-    valid_option = db.query(Option).filter(
-        Option.election_id == election.id,
-        Option.option_text == vote_data.choice
-    ).first()
-    
-    if not valid_option:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid voting option"
+    # Handle multi-position voting
+    if vote_data.votes:
+        votes_cast = []
+        for position_vote in vote_data.votes:
+            # Verify the position exists and belongs to this election
+            position = db.query(Position).filter(
+                Position.id == position_vote.position_id,
+                Position.election_id == election.id
+            ).first()
+            
+            if not position:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid position ID: {position_vote.position_id}"
+                )
+            
+            # Verify the choice is valid for this position
+            valid_option = db.query(Option).filter(
+                Option.position_id == position.id,
+                Option.option_text == position_vote.choice
+            ).first()
+            
+            if not valid_option:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid option '{position_vote.choice}' for position '{position.title}'"
+                )
+            
+            # Create vote record
+            new_vote = Vote(
+                election_id=election.id,
+                position_id=position.id,
+                voter_id=None,
+                choice=position_vote.choice
+            )
+            db.add(new_vote)
+            votes_cast.append(new_vote)
+        
+        # Mark registration as voted
+        registration.has_voted = True
+        db.commit()
+        
+        return MultiVoteResponse(
+            message="Votes submitted successfully",
+            election_id=election.id,
+            votes_cast=len(votes_cast)
         )
     
-    # Create vote record (voter_id is None for privacy)
-    new_vote = Vote(
-        election_id=election.id,
-        voter_id=None,  # Keep voter identity anonymous
-        choice=vote_data.choice
-    )
+    # Handle single-position voting (backward compatible)
+    elif vote_data.choice:
+        # Verify the choice is valid
+        valid_option = db.query(Option).filter(
+            Option.election_id == election.id,
+            Option.option_text == vote_data.choice
+        ).first()
+        
+        if not valid_option:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid voting option"
+            )
+        
+        # Create vote record (voter_id is None for privacy)
+        new_vote = Vote(
+            election_id=election.id,
+            position_id=None,
+            voter_id=None,
+            choice=vote_data.choice
+        )
+        
+        # Mark registration as voted
+        registration.has_voted = True
+        
+        db.add(new_vote)
+        db.commit()
+        db.refresh(new_vote)
+        
+        return new_vote
     
-    # Mark registration as voted
-    registration.has_voted = True
-    
-    db.add(new_vote)
-    db.commit()
-    db.refresh(new_vote)
-    
-    return new_vote
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No vote data provided"
+        )
 
 @router.get("/anonymous-vote-info/{election_id}")
 def get_anonymous_vote_info(election_id: int, db: Session = Depends(get_db)):
     """
     Get election information for anonymous voting
     Anyone can access this without registration
-    Returns election info and available voting options
+    Returns election info and available voting options (grouped by position if multi-position)
     """
     # Find the election
     election = db.query(Election).filter(Election.id == election_id).first()
@@ -245,19 +329,44 @@ def get_anonymous_vote_info(election_id: int, db: Session = Depends(get_db)):
             detail="Election has ended"
         )
     
-    # Get voting options
-    options = db.query(Option).filter(Option.election_id == election.id).all()
+    # Check if this is a multi-position election
+    positions = db.query(Position).filter(Position.election_id == election.id).order_by(Position.order).all()
     
-    return {
-        "election_id": election.id,
-        "title": election.title,
-        "description": election.description,
-        "start_time": election.start_time,
-        "end_time": election.end_time,
-        "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
-    }
+    if positions:
+        # Multi-position election: return positions with their options
+        positions_data = []
+        for pos in positions:
+            options = db.query(Option).filter(Option.position_id == pos.id).all()
+            positions_data.append({
+                "id": pos.id,
+                "title": pos.title,
+                "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
+            })
+        
+        return {
+            "election_id": election.id,
+            "title": election.title,
+            "description": election.description,
+            "start_time": election.start_time,
+            "end_time": election.end_time,
+            "is_multi_position": True,
+            "positions": positions_data
+        }
+    else:
+        # Single-position election: return flat options (backward compatible)
+        options = db.query(Option).filter(Option.election_id == election.id).all()
+        
+        return {
+            "election_id": election.id,
+            "title": election.title,
+            "description": election.description,
+            "start_time": election.start_time,
+            "end_time": election.end_time,
+            "is_multi_position": False,
+            "options": [{"id": opt.id, "text": opt.option_text} for opt in options]
+        }
 
-@router.post("/vote/anonymous/{election_id}", response_model=VoteResponse)
+@router.post("/vote/anonymous/{election_id}")
 def cast_anonymous_vote(
     election_id: int,
     vote_data: VoteCreate,
@@ -265,8 +374,7 @@ def cast_anonymous_vote(
 ):
     """
     Cast an anonymous vote (no registration required)
-    Note: In production, implement additional measures to prevent duplicate voting
-    (e.g., IP tracking, browser fingerprinting, or CAPTCHA)
+    Supports both single-position and multi-position elections
     """
     # Find the election
     election = db.query(Election).filter(Election.id == election_id).first()
@@ -298,27 +406,82 @@ def cast_anonymous_vote(
             detail="Election has ended"
         )
     
-    # Verify the choice is valid
-    valid_option = db.query(Option).filter(
-        Option.election_id == election.id,
-        Option.option_text == vote_data.choice
-    ).first()
-    
-    if not valid_option:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid voting option"
+    # Handle multi-position voting
+    if vote_data.votes:
+        votes_cast = []
+        for position_vote in vote_data.votes:
+            # Verify the position exists and belongs to this election
+            position = db.query(Position).filter(
+                Position.id == position_vote.position_id,
+                Position.election_id == election.id
+            ).first()
+            
+            if not position:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid position ID: {position_vote.position_id}"
+                )
+            
+            # Verify the choice is valid for this position
+            valid_option = db.query(Option).filter(
+                Option.position_id == position.id,
+                Option.option_text == position_vote.choice
+            ).first()
+            
+            if not valid_option:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid option '{position_vote.choice}' for position '{position.title}'"
+                )
+            
+            # Create vote record
+            new_vote = Vote(
+                election_id=election.id,
+                position_id=position.id,
+                voter_id=None,
+                choice=position_vote.choice
+            )
+            db.add(new_vote)
+            votes_cast.append(new_vote)
+        
+        db.commit()
+        
+        return MultiVoteResponse(
+            message="Votes submitted successfully",
+            election_id=election.id,
+            votes_cast=len(votes_cast)
         )
     
-    # Create anonymous vote record
-    new_vote = Vote(
-        election_id=election_id,
-        voter_id=None,  # No voter ID for anonymous votes
-        choice=vote_data.choice
-    )
+    # Handle single-position voting (backward compatible)
+    elif vote_data.choice:
+        # Verify the choice is valid
+        valid_option = db.query(Option).filter(
+            Option.election_id == election.id,
+            Option.option_text == vote_data.choice
+        ).first()
+        
+        if not valid_option:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid voting option"
+            )
+        
+        # Create anonymous vote record
+        new_vote = Vote(
+            election_id=election_id,
+            position_id=None,
+            voter_id=None,
+            choice=vote_data.choice
+        )
+        
+        db.add(new_vote)
+        db.commit()
+        db.refresh(new_vote)
+        
+        return new_vote
     
-    db.add(new_vote)
-    db.commit()
-    db.refresh(new_vote)
-    
-    return new_vote
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No vote data provided"
+        )
